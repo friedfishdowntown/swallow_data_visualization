@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swallow Detection Dashboard</title>
+<script src="plotly.min.js"></script>
+<style>
+  :root {
+    --bg: #f8f9fa;
+    --card: #ffffff;
+    --text: #1a1a2e;
+    --border: #dee2e6;
+    --accent: #4361ee;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .header h1 { font-size: 18px; font-weight: 600; white-space: nowrap; }
+  .controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .controls label { font-size: 13px; font-weight: 500; color: #666; }
+  .controls select {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    background: var(--card);
+    min-width: 100px;
+  }
+  .status { font-size: 12px; color: #888; margin-left: auto; }
+
+  .metrics-bar {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 24px;
+    display: flex;
+    gap: 24px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 13px;
+  }
+  .metric {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .metric-label { color: #666; font-weight: 500; }
+  .metric-value { font-weight: 700; font-size: 15px; }
+  .legend-bar {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    margin-left: auto;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+  }
+  .legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(0,0,0,0.15);
+  }
+
+  .plots { padding: 8px 16px; }
+  .plot-container {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 6px;
+    overflow: visible;
+  }
+  .chip-bar {
+    padding: 4px 16px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    font-size: 13px;
+    flex-wrap: wrap;
+  }
+  .chip-bar label { color: #666; font-weight: 500; }
+  .chip-bar .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.15s;
+  }
+  .chip-bar .chip.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+  .chip-bar .chip:hover { border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Swallow Detection Data Viewer</h1>
+  <div class="controls">
+    <label>Model</label>
+    <select id="sel-model"><option>—</option></select>
+    <label>Person</label>
+    <select id="sel-person"><option>Loading...</option></select>
+    <label>Session</label>
+    <select id="sel-session"><option>—</option></select>
+  </div>
+  <div class="status" id="status"></div>
+</div>
+
+<div class="metrics-bar">
+  <div class="metric">
+    <span class="metric-label">F1:</span>
+    <span class="metric-value" id="m-f1">—</span>
+  </div>
+  <div class="metric">
+    <span class="metric-label">Temporal IoU:</span>
+    <span class="metric-value" id="m-iou">—</span>
+  </div>
+  <div class="metric">
+    <span class="metric-label">Cohen's &kappa;:</span>
+    <span class="metric-value" id="m-kappa">—</span>
+  </div>
+  <div class="metric">
+    <span class="metric-label">Session Type:</span>
+    <span class="metric-value" id="m-type">—</span>
+  </div>
+  <div class="legend-bar" id="legend-bar"></div>
+</div>
+
+<div class="plots">
+  <div class="plot-container">
+    <div id="plot-model" style="height:180px;width:100%"></div>
+  </div>
+  <div class="plot-container">
+    <div class="chip-bar" id="phase-controls"></div>
+    <div id="plot-phase" style="height:200px;width:100%"></div>
+  </div>
+  <div class="plot-container">
+    <div id="plot-doppler" style="height:220px;width:100%"></div>
+  </div>
+  <div class="plot-container">
+    <div id="plot-imu" style="height:200px;width:100%"></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const BASE = 'data';
+  let manifest = {};
+  let sessionData = null;
+
+  const selModel  = document.getElementById('sel-model');
+  const selPerson = document.getElementById('sel-person');
+  const selSession = document.getElementById('sel-session');
+  const statusEl  = document.getElementById('status');
+
+  const plotConfig = { responsive: true, displayModeBar: false };
+  const plotLayoutBase = {
+    margin: { l: 55, r: 20, t: 30, b: 30 },
+    paper_bgcolor: 'white',
+    plot_bgcolor: 'white',
+    font: { size: 11 },
+  };
+
+  // --- Color map for session types ---
+  const TYPE_COLORS = {
+    '5ml':         { fill: 'rgba(76, 175, 80, 0.18)',  line: 'rgba(76, 175, 80, 0.7)',  solid: '#4CAF50', name: '5 mL Water' },
+    '15ml':        { fill: 'rgba(33, 150, 243, 0.18)', line: 'rgba(33, 150, 243, 0.7)', solid: '#2196F3', name: '15 mL Water' },
+    'dry':         { fill: 'rgba(255, 152, 0, 0.18)',  line: 'rgba(255, 152, 0, 0.7)',  solid: '#FF9800', name: 'Dry Swallow' },
+    'level4':      { fill: 'rgba(156, 39, 176, 0.18)', line: 'rgba(156, 39, 176, 0.7)', solid: '#9C27B0', name: 'Level 4 (Puree)' },
+    'level4-free': { fill: 'rgba(121, 85, 72, 0.18)',  line: 'rgba(121, 85, 72, 0.7)',  solid: '#795548', name: 'Level 4 Free' },
+    'level7':      { fill: 'rgba(244, 67, 54, 0.18)',  line: 'rgba(244, 67, 54, 0.7)',  solid: '#F44336', name: 'Level 7 (Regular)' },
+    'water':       { fill: 'rgba(0, 188, 212, 0.18)',  line: 'rgba(0, 188, 212, 0.7)',  solid: '#00BCD4', name: 'Water' },
+    'test':        { fill: 'rgba(158, 158, 158, 0.18)',line: 'rgba(158, 158, 158, 0.7)',solid: '#9E9E9E', name: 'Test' },
+    'unknown':     { fill: 'rgba(96, 96, 96, 0.18)',   line: 'rgba(96, 96, 96, 0.7)',   solid: '#606060', name: 'Unknown' },
+  };
+
+  function getTypeColor(sessionType) {
+    return TYPE_COLORS[sessionType] || TYPE_COLORS['unknown'];
+  }
+
+  let currentXRange = null;
+
+  // --- Init ---
+  async function init() {
+    try {
+      const resp = await fetch(BASE + '/manifest.json');
+      manifest = await resp.json();
+    } catch (e) {
+      statusEl.textContent = 'Failed to load manifest.json';
+      return;
+    }
+    const people = Object.keys(manifest).sort();
+    selPerson.innerHTML = people.map(p => `<option value="${p}">${p}</option>`).join('');
+    selPerson.addEventListener('change', onPersonChange);
+    selSession.addEventListener('change', onSessionChange);
+    selModel.addEventListener('change', () => { computeMetrics(); renderModel(); });
+    onPersonChange();
+    buildLegend();
+  }
+
+  function buildLegend() {
+    const bar = document.getElementById('legend-bar');
+    const types = ['5ml', '15ml', 'dry', 'level4', 'level7'];
+    bar.innerHTML = types.map(t => {
+      const c = TYPE_COLORS[t];
+      return `<span class="legend-item"><span class="legend-swatch" style="background:${c.solid}"></span>${c.name}</span>`;
+    }).join('');
+  }
+
+  function onPersonChange() {
+    const person = selPerson.value;
+    const sessions = manifest[person] || [];
+    selSession.innerHTML = sessions.map(s => `<option value="${s}">${s}</option>`).join('');
+    if (sessions.length > 0) onSessionChange();
+  }
+
+  async function onSessionChange() {
+    const person = selPerson.value;
+    const session = selSession.value;
+    if (!person || !session) return;
+
+    statusEl.textContent = 'Loading...';
+    currentXRange = null;
+
+    try {
+      const resp = await fetch(`${BASE}/${person}/${session}.json`);
+      sessionData = await resp.json();
+    } catch (e) {
+      statusEl.textContent = 'Failed to load session data';
+      return;
+    }
+
+    const stype = sessionData.session_type || 'unknown';
+    const tc = getTypeColor(stype);
+    document.getElementById('m-type').textContent = tc.name;
+    document.getElementById('m-type').style.color = tc.solid;
+
+    statusEl.textContent = `${sessionData.duration_s.toFixed(1)}s, ${sessionData.n_rx} RX, ${sessionData.labels.length} events`;
+
+    // populate model dropdown
+    const modelNames = sessionData.models ? Object.keys(sessionData.models).sort() : [];
+    const prevModel = selModel.value;
+    selModel.innerHTML = modelNames.length > 0
+      ? modelNames.map(m => `<option value="${m}"${m === prevModel ? ' selected' : ''}>${m}</option>`).join('')
+      : '<option>—</option>';
+
+    computeMetrics();
+    renderAll();
+  }
+
+  function getSelectedModel() {
+    const d = sessionData;
+    if (!d || !d.models) return null;
+    return d.models[selModel.value] || null;
+  }
+
+  // --- Metrics ---
+  function computeMetrics() {
+    const m = getSelectedModel();
+    const f1El = document.getElementById('m-f1');
+    const iouEl = document.getElementById('m-iou');
+    const kappaEl = document.getElementById('m-kappa');
+
+    if (!m || !m.labels || m.labels.length === 0) {
+      f1El.textContent = '—';
+      iouEl.textContent = '—';
+      kappaEl.textContent = '—';
+      return;
+    }
+
+    const gt = m.labels;
+    const pred = m.predictions || null;
+
+    if (!pred) {
+      f1El.textContent = 'N/A';
+      iouEl.textContent = 'N/A';
+      kappaEl.textContent = 'N/A';
+      return;
+    }
+
+    // F1
+    let tp = 0, fp = 0, fn = 0, tn = 0;
+    for (let i = 0; i < gt.length; i++) {
+      if (gt[i] === 1 && pred[i] === 1) tp++;
+      else if (gt[i] === 0 && pred[i] === 1) fp++;
+      else if (gt[i] === 1 && pred[i] === 0) fn++;
+      else tn++;
+    }
+    const precision = tp + fp > 0 ? tp / (tp + fp) : 0;
+    const recall = tp + fn > 0 ? tp / (tp + fn) : 0;
+    const f1 = precision + recall > 0 ? 2 * precision * recall / (precision + recall) : 0;
+    f1El.textContent = f1.toFixed(3);
+    f1El.style.color = f1 > 0.7 ? '#4CAF50' : f1 > 0.4 ? '#FF9800' : '#F44336';
+
+    // Temporal IoU (per-event, averaged)
+    const gtEvents = findEvents(gt, m.t);
+    const predEvents = findEvents(pred, m.t);
+    let iouSum = 0, iouCount = 0;
+    for (const ge of gtEvents) {
+      let bestIou = 0;
+      for (const pe of predEvents) {
+        const inter = Math.max(0, Math.min(ge.end, pe.end) - Math.max(ge.start, pe.start));
+        const union = (ge.end - ge.start) + (pe.end - pe.start) - inter;
+        if (union > 0) bestIou = Math.max(bestIou, inter / union);
+      }
+      iouSum += bestIou;
+      iouCount++;
+    }
+    const avgIou = iouCount > 0 ? iouSum / iouCount : 0;
+    iouEl.textContent = avgIou.toFixed(3);
+    iouEl.style.color = avgIou > 0.5 ? '#4CAF50' : avgIou > 0.3 ? '#FF9800' : '#F44336';
+
+    // Cohen's Kappa
+    const n = gt.length;
+    const po = (tp + tn) / n;
+    const pYes = ((tp + fp) / n) * ((tp + fn) / n);
+    const pNo = ((tn + fn) / n) * ((tn + fp) / n);
+    const pe = pYes + pNo;
+    const kappa = pe < 1 ? (po - pe) / (1 - pe) : 1;
+    kappaEl.textContent = kappa.toFixed(3);
+    kappaEl.style.color = kappa > 0.6 ? '#4CAF50' : kappa > 0.3 ? '#FF9800' : '#F44336';
+  }
+
+  function findEvents(binary, times) {
+    const events = [];
+    let inEvent = false, start = 0;
+    for (let i = 0; i < binary.length; i++) {
+      if (binary[i] === 1 && !inEvent) { inEvent = true; start = times[i]; }
+      if ((binary[i] === 0 || i === binary.length - 1) && inEvent) {
+        events.push({ start, end: times[i] });
+        inEvent = false;
+      }
+    }
+    return events;
+  }
+
+  // --- Label shapes with color coding ---
+  function labelShapes(labels, sessionType) {
+    const c = getTypeColor(sessionType);
+    return labels.map(l => ({
+      type: 'rect',
+      xref: 'x', yref: 'paper',
+      x0: l.start, x1: l.stop,
+      y0: 0, y1: 1,
+      fillcolor: c.fill,
+      line: { color: c.line, width: 1.5 },
+    }));
+  }
+
+  // --- X-axis sync ---
+  function setupXSync(plotId) {
+    const el = document.getElementById(plotId);
+    el.on('plotly_relayout', function(ed) {
+      if (ed['xaxis.autorange']) {
+        currentXRange = null;
+        syncX(plotId, null);
+      } else if (ed['xaxis.range[0]'] !== undefined) {
+        currentXRange = [ed['xaxis.range[0]'], ed['xaxis.range[1]']];
+        syncX(plotId, currentXRange);
+      }
+    });
+  }
+
+  function syncX(sourceId, range) {
+    const ids = ['plot-model', 'plot-phase', 'plot-doppler', 'plot-imu'];
+    ids.forEach(id => {
+      if (id === sourceId) return;
+      const el = document.getElementById(id);
+      if (!el || !el.data) return;
+      const update = range
+        ? { 'xaxis.range[0]': range[0], 'xaxis.range[1]': range[1] }
+        : { 'xaxis.autorange': true };
+      Plotly.relayout(el, update);
+    });
+  }
+
+  function smoothSignal(y, windowSize) {
+    if (windowSize <= 1 || y.length <= windowSize) return y;
+    const half = Math.floor(windowSize / 2);
+    const out = new Array(y.length);
+    for (let i = 0; i < y.length; i++) {
+      let sum = 0, count = 0;
+      for (let j = Math.max(0, i - half); j <= Math.min(y.length - 1, i + half); j++) {
+        sum += y[j];
+        count++;
+      }
+      out[i] = sum / count;
+    }
+    return out;
+  }
+
+  // --- Plot 1: Model prediction / labels ---
+  function renderModel() {
+    const d = sessionData;
+    const stype = d.session_type || 'unknown';
+    const tc = getTypeColor(stype);
+    const traces = [];
+
+    const m = getSelectedModel();
+    if (m && m.t && m.t.length > 0) {
+      if (m.probabilities) {
+        traces.push({
+          x: m.t, y: m.probabilities,
+          type: 'scatter', mode: 'lines',
+          name: 'P(swallow)',
+          line: { color: '#e63946', width: 2, shape: 'spline' },
+        });
+      }
+
+      if (m.predictions) {
+        traces.push({
+          x: m.t, y: m.predictions,
+          type: 'scatter', mode: 'lines',
+          name: 'Prediction',
+          line: { color: '#4361ee', width: 1.5, dash: 'dot' },
+        });
+      }
+    }
+
+    const layout = {
+      ...plotLayoutBase,
+      title: { text: `Swallow Detection — ${tc.name}`, font: { size: 13 } },
+      xaxis: { title: 'Time (s)', range: currentXRange },
+      yaxis: { title: 'Probability', range: [-0.1, 1.3], side: 'left', dtick: 0.5 },
+      shapes: labelShapes(d.labels, stype),
+      showlegend: true,
+      legend: { x: 0.01, y: 0.99, font: { size: 10 }, bgcolor: 'rgba(255,255,255,0.7)' },
+    };
+
+    Plotly.newPlot('plot-model', traces, layout, plotConfig);
+    setupXSync('plot-model');
+  }
+
+  // --- Plot 2: Phase displacement ---
+  let activeBin = 7;
+  let activeRx = 0;
+
+  function buildPhaseControls() {
+    const d = sessionData;
+    const container = document.getElementById('phase-controls');
+    container.innerHTML = '';
+
+    const rxLabel = document.createElement('label');
+    rxLabel.textContent = 'RX:';
+    container.appendChild(rxLabel);
+    for (let rx = 0; rx < d.n_rx; rx++) {
+      const chip = document.createElement('span');
+      chip.className = 'chip' + (rx === activeRx ? ' active' : '');
+      chip.textContent = `RX${rx}`;
+      chip.onclick = () => { activeRx = rx; buildPhaseControls(); renderPhase(); };
+      container.appendChild(chip);
+    }
+
+    const binLabel = document.createElement('label');
+    binLabel.textContent = 'Bin:';
+    binLabel.style.marginLeft = '12px';
+    container.appendChild(binLabel);
+    for (const bin of d.bins) {
+      const chip = document.createElement('span');
+      chip.className = 'chip' + (bin === activeBin ? ' active' : '');
+      chip.textContent = `${bin}`;
+      chip.onclick = () => { activeBin = bin; buildPhaseControls(); renderPhase(); };
+      container.appendChild(chip);
+    }
+  }
+
+  function renderPhase() {
+    const d = sessionData;
+    const stype = d.session_type || 'unknown';
+    const key = `rx${activeRx}_bin${activeBin}`;
+    const phaseSignal = d.phase[key];
+    if (!phaseSignal) return;
+
+    const traces = [{
+      x: phaseSignal.t, y: phaseSignal.disp_mm,
+      type: 'scatter', mode: 'lines',
+      name: `Phase RX${activeRx} Bin${activeBin}`,
+      line: { color: '#2a9d8f', width: 1 },
+    }];
+
+    const layout = {
+      ...plotLayoutBase,
+      title: { text: `Phase Displacement — RX${activeRx} Bin${activeBin}`, font: { size: 13 } },
+      xaxis: { title: 'Time (s)', range: currentXRange },
+      yaxis: { title: 'Displacement (mm)' },
+      shapes: labelShapes(d.labels, stype),
+      showlegend: false,
+    };
+
+    Plotly.newPlot('plot-phase', traces, layout, plotConfig);
+    setupXSync('plot-phase');
+  }
+
+  // --- Plot 3: Doppler spectrogram ---
+  function renderDoppler() {
+    const d = sessionData;
+    if (!d.doppler) {
+      Plotly.newPlot('plot-doppler', [], {
+        ...plotLayoutBase,
+        title: { text: 'Doppler Spectrogram (no data)', font: { size: 13 } },
+      }, plotConfig);
+      return;
+    }
+
+    const traces = [{
+      x: d.doppler.t, y: d.doppler.f, z: d.doppler.db,
+      type: 'heatmap',
+      colorscale: 'Jet',
+      zsmooth: 'best',
+      zmin: -60, zmax: 0,
+      colorbar: { title: 'dB', titleside: 'right', thickness: 12, len: 0.9 },
+    }];
+
+    const stype = d.session_type || 'unknown';
+    const layout = {
+      ...plotLayoutBase,
+      title: { text: `Doppler Spectrogram — Bin${activeBin}`, font: { size: 13 } },
+      xaxis: { title: 'Time (s)', range: currentXRange },
+      yaxis: { title: 'Doppler (Hz)' },
+      shapes: labelShapes(d.labels, stype),
+    };
+
+    Plotly.newPlot('plot-doppler', traces, layout, plotConfig);
+    setupXSync('plot-doppler');
+  }
+
+  // --- Plot 4: IMU2 ---
+  function renderIMU() {
+    const d = sessionData;
+    const stype = d.session_type || 'unknown';
+    if (!d.imu2) {
+      Plotly.newPlot('plot-imu', [], {
+        ...plotLayoutBase,
+        title: { text: 'IMU2 (no data)', font: { size: 13 } },
+      }, plotConfig);
+      return;
+    }
+
+    const traces = [
+      { x: d.imu2.t, y: d.imu2.ax, type: 'scatter', mode: 'lines', name: 'ax', line: { color: '#e63946', width: 1 } },
+      { x: d.imu2.t, y: d.imu2.ay, type: 'scatter', mode: 'lines', name: 'ay', line: { color: '#2a9d8f', width: 1 } },
+      { x: d.imu2.t, y: d.imu2.az, type: 'scatter', mode: 'lines', name: 'az', line: { color: '#4361ee', width: 1 } },
+      { x: d.imu2.t, y: d.imu2.mag, type: 'scatter', mode: 'lines', name: '|a|', line: { color: '#f77f00', width: 1.5, dash: 'dot' } },
+    ];
+
+    const layout = {
+      ...plotLayoutBase,
+      title: { text: 'IMU2 Acceleration', font: { size: 13 } },
+      xaxis: { title: 'Time (s)', range: currentXRange },
+      yaxis: { title: 'Acceleration (g)' },
+      shapes: labelShapes(d.labels, stype),
+      showlegend: true,
+      legend: { x: 0.01, y: 0.99, font: { size: 10 }, bgcolor: 'rgba(255,255,255,0.7)' },
+    };
+
+    Plotly.newPlot('plot-imu', traces, layout, plotConfig);
+    setupXSync('plot-imu');
+  }
+
+  function renderAll() {
+    renderModel();
+    buildPhaseControls();
+    renderPhase();
+    renderDoppler();
+    renderIMU();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>
