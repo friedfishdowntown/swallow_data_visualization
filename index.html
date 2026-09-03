@@ -166,6 +166,7 @@
     <div id="plot-doppler" style="height:220px;width:100%"></div>
   </div>
   <div class="plot-container">
+    <div class="chip-bar" id="imu-controls"></div>
     <div id="plot-imu" style="height:200px;width:100%"></div>
   </div>
 </div>
@@ -553,6 +554,29 @@
   }
 
   // --- Plot 4: IMU2 ---
+  const imuAxes = { ax: true, ay: true, az: true, mag: true };
+  const imuAxisConfig = {
+    ax:  { label: 'ax',  color: '#e63946', width: 1 },
+    ay:  { label: 'ay',  color: '#2a9d8f', width: 1 },
+    az:  { label: 'az',  color: '#4361ee', width: 1 },
+    mag: { label: '|a|', color: '#f77f00', width: 1.5, dash: 'dot' },
+  };
+
+  function buildIMUControls() {
+    const container = document.getElementById('imu-controls');
+    container.innerHTML = '';
+    const label = document.createElement('label');
+    label.textContent = 'Axes:';
+    container.appendChild(label);
+    for (const [key, cfg] of Object.entries(imuAxisConfig)) {
+      const chip = document.createElement('span');
+      chip.className = 'chip' + (imuAxes[key] ? ' active' : '');
+      chip.textContent = cfg.label;
+      chip.onclick = () => { imuAxes[key] = !imuAxes[key]; buildIMUControls(); renderIMU(); };
+      container.appendChild(chip);
+    }
+  }
+
   function renderIMU() {
     const d = sessionData;
     const stype = d.session_type || 'unknown';
@@ -564,12 +588,16 @@
       return;
     }
 
-    const traces = [
-      { x: d.imu2.t, y: d.imu2.ax, type: 'scatter', mode: 'lines', name: 'ax', line: { color: '#e63946', width: 1 } },
-      { x: d.imu2.t, y: d.imu2.ay, type: 'scatter', mode: 'lines', name: 'ay', line: { color: '#2a9d8f', width: 1 } },
-      { x: d.imu2.t, y: d.imu2.az, type: 'scatter', mode: 'lines', name: 'az', line: { color: '#4361ee', width: 1 } },
-      { x: d.imu2.t, y: d.imu2.mag, type: 'scatter', mode: 'lines', name: '|a|', line: { color: '#f77f00', width: 1.5, dash: 'dot' } },
-    ];
+    const traces = [];
+    for (const [key, cfg] of Object.entries(imuAxisConfig)) {
+      if (!imuAxes[key]) continue;
+      traces.push({
+        x: d.imu2.t, y: d.imu2[key],
+        type: 'scatter', mode: 'lines',
+        name: cfg.label,
+        line: { color: cfg.color, width: cfg.width, dash: cfg.dash },
+      });
+    }
 
     const layout = {
       ...plotLayoutBase,
@@ -590,6 +618,7 @@
     buildPhaseControls();
     renderPhase();
     renderDoppler();
+    buildIMUControls();
     renderIMU();
   }
 
